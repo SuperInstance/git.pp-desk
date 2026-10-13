@@ -1,0 +1,16 @@
+name = "gitpp-desk"
+main = "src/index.ts"
+compatibility_date = "2025-10-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# The Desk is a Durable Object (via the Agents SDK): one instance per
+# project name. Its SQLite holds ONLY a re-derivable projection of the
+# git.pp record — see src/index.ts and the README's boundary rules.
+[[durable_objects.bindings]]
+name = "DESK"
+class_name = "Desk"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Desk"]
