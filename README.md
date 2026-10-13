@@ -47,11 +47,37 @@ one instance per git.pp project. The Desk:
   rebuild re-derives it from the record alone. The desk is a
   projection iff the digest comes back identical.
 
-The page at `/` is the chair: project picker, the five lines,
-conflicts with a *why?* button per key, the witness table, the draft
-form, and the burn panel with the two digests side by side — all live
-over the agent's WebSocket. A small HTTP proxy (`/api/desk`) exposes
-the same callables for curl and for the playtest below.
+The page at `/` is the chair, arranged as a story first and depth
+below — a stranger should meet the claim, the mechanism, and the
+proof before any table:
+
+1. **The claim.** "State is what completed tasks leave behind." —
+   two plain sentences of explanation, and the pointer at the proof.
+2. **Watch the fold.** A replay steps the record in the fold's
+   application order and re-derives the state *in the visitor's own
+   browser* (a client-side port of the same DESIGN §2 rule),
+   narrating each resolution as it happens — who holds each key and
+   why, in fold terms. On `poc-quilt-1` the honest arc is sharper
+   than the intuitive one: 30 lands; **60 never holds the key** (the
+   rival chains tie on cleanliness, so the smallest id keeps 30);
+   the captain's override takes it at 45 on class precedence, with
+   its reason quoted; then 99 — the biggest value, the latest
+   arrival, on a branch that never descended from the ruling —
+   loses too. The prefix behaviour was checked step by step against
+   the Python referee (`referee/fold.py`) during the build. At the
+   end, the browser's own fold is digested and compared with the
+   desk's live digest, on the page.
+3. **The burn, centre stage.** The burn/rebuild drill, framed as
+   the demonstration it is — visitor-safe (the record is untouched;
+   the desk also heals on its cadence).
+4. **Below the fold, the depth:** the five lines, conflicts with a
+   *why?* button per key, the witness table, the record itself in
+   application order, the draft form, and links (submission repo,
+   conformance totals, demo video).
+
+All of it live over the agent's WebSocket. A small HTTP proxy
+(`/api/desk`) exposes the same callables for curl and for the
+playtest below.
 
 ## The boundary (why the desk can't become a second truth)
 
@@ -104,6 +130,15 @@ PASS  5b. websocket broadcasts the projection
 
 All checks passed.
 ```
+
+**Front-page rebuild (2026-10-13, later):** the page was re-staged
+story-first (claim → replay → burn, depth below the fold; see
+"What it is"). The playtest was re-run against the redeployed desk:
+**all checks pass**, including a new check 5c asserting the served
+HTML carries the claim, the fold, and the burn in that order before
+the depth sections (claim@4795, fold@5373, burn@6506, depth@7461 in
+the served bytes). Checks 1–4 are unchanged and still green —
+independent digest `010e942c…95823` before and after.
 
 **The cadence is real, not decorative.** A first `status` call woke
 the `poc-scale-1` desk cold (`ready:false, digest:null`). No further

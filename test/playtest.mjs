@@ -102,7 +102,24 @@ check(
 
 /* (5) The page answers, and the socket speaks. */
 const page = await fetch(`${DESK}/?project=${PROJECT}`);
-check("5a. page serves", page.status === 200 && (await page.text()).includes("Captain's Desk"));
+const pageHtml = await page.text();
+check("5a. page serves", page.status === 200 && pageHtml.includes("Captain's Desk"));
+
+/* (5c) The first screen carries the story, in order: the claim, the
+   fold replay, the burn — all before the depth sections. A stranger
+   should meet the sentence, the mechanism, and the proof without
+   scrolling; this checks the served HTML's structure, cold. */
+{
+  const claimAt = pageHtml.indexOf("State is what completed tasks leave behind.");
+  const foldAt = pageHtml.indexOf("Watch the fold");
+  const burnAt = pageHtml.indexOf('id="burn"');
+  const depthAt = pageHtml.indexOf("The five lines");
+  check(
+    "5c. first screen: claim → fold → burn, before the depth",
+    claimAt >= 0 && foldAt > claimAt && burnAt > foldAt && depthAt > burnAt,
+    `claim@${claimAt} fold@${foldAt} burn@${burnAt} depth@${depthAt}`,
+  );
+}
 try {
   const wsState = await new Promise((resolve, reject) => {
     const ws = new WebSocket(`wss://${new URL(DESK).host}/agents/desk/${PROJECT}`);
