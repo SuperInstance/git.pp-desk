@@ -120,6 +120,118 @@ check("5a. page serves", page.status === 200 && pageHtml.includes("Captain's Des
     `claim@${claimAt} fold@${foldAt} burn@${burnAt} depth@${depthAt}`,
   );
 }
+
+/* (5d) Shuffle & re-fold: the served page carries the control, and the
+   fold itself is arrival-order invariant. The fold port below mirrors
+   the page's client port function for function (same graph over all
+   records, same prefix-filtered candidates, same resolution); the
+   permutations are seeded (mulberry32) so the run is reproducible.
+   The digest each shuffled fold must land on is the independent one
+   from check (1) — computed from the record, not from any fold here.
+   Intermediate states are compared prefix-by-prefix with the
+   canonical walk, and the divergence count is reported as measured. */
+{
+  check("5d. served page contains the shuffle control", pageHtml.includes('id="s-shuffle"'));
+
+  const CLASS_RANK = { override: 3, task: 2, witness: 1 };
+  const byId = {};
+  recordsDoc.records.forEach((r) => { byId[r.id] = r; });
+  const ancCache = {};
+  const ancOf = (id) => {
+    if (ancCache[id]) return ancCache[id];
+    const seen = {};
+    const stack = [...(byId[id]?.parents ?? [])];
+    while (stack.length) {
+      const x = stack.pop();
+      if (seen[x] || !byId[x]) continue;
+      seen[x] = true;
+      (byId[x].parents ?? []).forEach((p) => stack.push(p));
+    }
+    return (ancCache[id] = seen);
+  };
+  const cleanOf = (id) => {
+    let intent = 0, witness = 0;
+    for (const x of Object.keys(ancOf(id))) {
+      const k = byId[x]?.kind;
+      if (k === "task" || k === "override") intent++;
+      else if (k === "witness") witness++;
+    }
+    return { intent, witness };
+  };
+  const resolveKeyAt = (applied, key) => {
+    const cands = applied.filter(
+      (r) => !r.orphan && r.effects && Object.prototype.hasOwnProperty.call(r.effects, key),
+    );
+    if (!cands.length) return null;
+    const top = Math.max(...cands.map((c) => CLASS_RANK[c.kind] || 0));
+    const pool = cands.filter((c) => (CLASS_RANK[c.kind] || 0) === top);
+    const maximal = pool.filter((c) => !pool.some((o) => o !== c && ancOf(o.id)[c.id]));
+    const sorted = maximal.slice().sort((a, b) => {
+      const ca = cleanOf(a.id), cb = cleanOf(b.id);
+      if (cb.intent !== ca.intent) return cb.intent - ca.intent;
+      if (ca.witness !== cb.witness) return ca.witness - cb.witness;
+      return a.id < b.id ? -1 : 1;
+    });
+    return sorted[0].effects[key];
+  };
+  const foldState = (applied) => {
+    const keys = {};
+    applied.forEach((r) => {
+      if (!r.orphan && r.effects) Object.keys(r.effects).forEach((k) => { keys[k] = true; });
+    });
+    const out = {};
+    Object.keys(keys).sort().forEach((k) => { out[k] = resolveKeyAt(applied, k); });
+    return out;
+  };
+
+  const canonSeq = live.order.filter((id) => byId[id]).map((id) => byId[id]);
+  recordsDoc.records.forEach((r) => { if (!canonSeq.includes(r)) canonSeq.push(r); });
+  const canonPrefix = canonSeq.map((_, k) => canonical(foldState(canonSeq.slice(0, k + 1))));
+
+  const mulberry32 = (seed) => () => {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const perms = [];
+  const seenSigs = new Set([canonSeq.map((r) => r.id).join(",")]);
+  for (let seed = 1; perms.length < 5 && seed < 200; seed++) {
+    const rnd = mulberry32(seed);
+    const p = canonSeq.slice();
+    for (let i = p.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      [p[i], p[j]] = [p[j], p[i]];
+    }
+    const sig = p.map((r) => r.id).join(",");
+    if (seenSigs.has(sig)) continue;
+    seenSigs.add(sig);
+    perms.push(p);
+  }
+
+  let allLanded = perms.length === 5;
+  let divergedCount = 0;
+  perms.forEach((p, idx) => {
+    let diverged = false;
+    let endDigest = null;
+    for (let k = 1; k <= p.length; k++) {
+      const st = foldState(p.slice(0, k));
+      if (k < p.length && canonical(st) !== canonPrefix[k - 1]) diverged = true;
+      if (k === p.length) endDigest = sha256(canonical(st));
+    }
+    if (endDigest !== independentDigest) allLanded = false;
+    if (diverged) divergedCount++;
+    console.log(
+      `  shuffle ${idx + 1} [${p.map((r) => r.id).join(", ")}]: end digest ${endDigest} — mid-fold diverged: ${diverged}`,
+    );
+  });
+  console.log(`  intermediate states diverged on ${divergedCount} of ${perms.length} permutations`);
+  check(
+    "5d. five seeded shuffles re-fold to the canonical digest",
+    allLanded,
+    `permutations=${perms.length}, mid-fold divergence on ${divergedCount}/${perms.length}`,
+  );
+}
 try {
   const wsState = await new Promise((resolve, reject) => {
     const ws = new WebSocket(`wss://${new URL(DESK).host}/agents/desk/${PROJECT}`);

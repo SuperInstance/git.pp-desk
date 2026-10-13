@@ -70,7 +70,16 @@ proof before any table:
 3. **The burn, centre stage.** The burn/rebuild drill, framed as
    the demonstration it is — visitor-safe (the record is untouched;
    the desk also heals on its cadence).
-4. **Below the fold, the depth:** the five lines, conflicts with a
+4. **Shuffle & re-fold, beside the burn.** The sibling proof: the
+   same records dealt in a fresh scrambled arrival order on every
+   press, folded by the *same* client port over the shuffled
+   prefixes, steppable like the replay. Intermediate states are
+   compared with the canonical walk as it goes — the paths are free
+   to differ, and do — and the run lands on a digest displayed next
+   to the canonical one, badged IDENTICAL when they match. The
+   sentence it teaches: the fold doesn't care what order work
+   arrived in; the same completions land on the same state.
+5. **Below the fold, the depth:** the five lines, conflicts with a
    *why?* button per key, the witness table, the record itself in
    application order, the draft form, and links (submission repo,
    conformance totals, demo video).
@@ -139,6 +148,21 @@ HTML carries the claim, the fold, and the burn in that order before
 the depth sections (claim@4795, fold@5373, burn@6506, depth@7461 in
 the served bytes). Checks 1–4 are unchanged and still green —
 independent digest `010e942c…95823` before and after.
+
+**Shuffle & re-fold (2026-10-13, later):** the second proof was
+staged beside the burn (see "What it is", item 4), and the playtest
+gained check 5d: the served page must carry the shuffle control,
+and five seeded permutations (mulberry32, seeds drawn in order) of
+the project's records — folded by a Node port of the same rule —
+must each land on the independent digest from check 1. Re-run live
+against both projects: **all checks pass** on `poc-quilt-1`
+(12 checks; the five shuffles land on `010e942c…95823`) and on
+`poc-scale-1` (the five 62-record shuffles land on
+`f1e78b16…4380d`). The measured contrast the control exists to
+show: **intermediate states diverged from the canonical walk on
+5 of 5 permutations, on both projects** — every scrambled walk
+parted from the canonical halfway houses, and every one landed on
+the same destination.
 
 **The cadence is real, not decorative.** A first `status` call woke
 the `poc-scale-1` desk cold (`ready:false, digest:null`). No further

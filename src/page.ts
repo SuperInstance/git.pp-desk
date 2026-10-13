@@ -23,6 +23,11 @@
  *      it at 45, and 99 loses on class. The narration is computed
  *      from the records, never scripted per project.
  *   3. The burn, centre stage: the desk's disposability, push-button.
+ *   3b. Shuffle & re-fold, beside the burn: the same records in a
+ *      scrambled arrival order, folded by this same port over the
+ *      shuffled prefixes, landing on the desk's digest. Intermediate
+ *      states may differ from the canonical walk; the end state may
+ *      not — that contrast is the second proof.
  *   4. Below the fold, the depth: the five lines, conflicts with
  *      why(), witnesses, the record itself, draft-an-override, and
  *      honest links (repo, conformance totals, demo video).
@@ -93,6 +98,13 @@ export const PAGE = `<!doctype html>
   /* --- the burn, framed --- */
   .burn-frame { border: 1px solid #9e6a03; border-radius: 8px; padding: 2px 16px 16px; margin-top: 30px; }
   .burn-frame h2 { color: #d29922; }
+  /* --- the shuffle, same family as the burn --- */
+  .shuffle-frame { border: 1px solid #238636; border-radius: 8px; padding: 2px 16px 16px; margin-top: 16px; }
+  .shuffle-frame h2 { color: #3fb950; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .chip { border: 1px solid #30363d; border-radius: 10px; padding: 1px 8px; font-size: 12.5px; color: #8b949e; }
+  .chip.done { color: #e6edf3; border-color: #238636; }
+  .chip.now { background: #238636; color: #fff; border-color: #238636; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -163,6 +175,33 @@ records, in any arrival order, and it leaves the same state behind. Watch it hap
   </div>
   <p>Digest before burn: <span class="digest" id="digest-before">—</span></p>
   <p>Digest after rebuild: <span class="digest" id="digest-after">—</span></p>
+</section>
+
+<section class="shuffle-frame" id="shuffle">
+  <h2>🔀 Shuffle &amp; re-fold — the same record, any arrival order</h2>
+  <p>The replay above walks the record in the fold's application order. But
+  agents don't arrive in order — they finish when they finish. So take the
+  same records, scramble the order they arrive in, and fold again, here in
+  your browser, with the very same code. Step through it: the halfway
+  houses may differ from the canonical walk. The destination may not. The
+  fold doesn't care what order work arrived in — the same completions land
+  on the same state.</p>
+  <div class="bar rcontrols">
+    <button id="s-shuffle" title="scramble the arrival order and fold again">🔀 shuffle &amp; re-fold</button>
+    <button id="s-prev" title="one arrival back">◀ step back</button>
+    <button id="s-play" title="play or pause the shuffled fold">▶ play</button>
+    <button id="s-next" title="one arrival forward">step ▶</button>
+    <button id="s-end" title="fold the whole shuffled record at once">⏭ fast-forward</button>
+    <span class="stepct" id="s-progress">press shuffle to scramble the arrival order</span>
+  </div>
+  <div class="chips" id="s-order"></div>
+  <div class="sgrid" id="s-state"><p style="margin:6px 0">No shuffled fold yet.</p></div>
+  <div class="narration" id="s-narration">Every press deals the same records in a
+  new arrival order. Watch the end state: it is not allowed to move.</div>
+  <p style="margin-top:10px">Canonical-order digest (the desk's live digest):
+    <span class="digest" id="s-digest-canon">—</span></p>
+  <p>Shuffled-fold digest (your browser, this arrival order):
+    <span class="digest" id="s-digest-shuf">—</span> <span id="s-verdict"></span></p>
 </section>
 
 <h2>The five lines</h2>
@@ -541,6 +580,7 @@ function initReplay(st) {
   replay.g = buildGraph(ordered);
   replay.digestAtInit = st.digest || null;
   replay.orderKey = (st.order || []).join(",");
+  resetShuffle();
   showStep(0);
 }
 
@@ -555,6 +595,7 @@ function replayEmpty(msg) {
   document.getElementById("narration").textContent =
     "An empty desk is the honest starting point: no state exists until the record is folded. Rebuild below and the fold replays again.";
   document.getElementById("replay-digest").textContent = "";
+  resetShuffle();
 }
 
 ["r-restart", "r-prev", "r-play", "r-next", "r-end"].forEach((id) => {
@@ -570,6 +611,171 @@ document.getElementById("r-play").onclick = () => {
   replay.interacted = true;
   if (replay.playing) stopPlay(); else startPlay();
 };
+
+/* ================================================================== */
+/* Shuffle & re-fold — the second proof. The SAME fold port above,    */
+/* run over prefixes of a scrambled arrival order. Nothing here is    */
+/* special-cased: stateAt/resolveKeyAt cannot tell a shuffled prefix  */
+/* from a canonical one, and that is precisely the point. The         */
+/* canonical digest it must land on is the desk's live digest for     */
+/* this record snapshot (replay.digestAtInit).                        */
+/* ================================================================== */
+
+const shuf = {
+  order: [], step: 0, playing: false, timer: null,
+  canonPrefix: [], diverged: false, finished: false,
+};
+
+function stopShufPlay() {
+  shuf.playing = false;
+  if (shuf.timer) { clearInterval(shuf.timer); shuf.timer = null; }
+  document.getElementById("s-play").textContent = "▶ play";
+}
+
+function startShufPlay() {
+  if (!shuf.order.length) return;
+  if (shuf.step >= shuf.order.length) showShufStep(0);
+  shuf.playing = true;
+  document.getElementById("s-play").textContent = "⏸ pause";
+  const delay = shuf.order.length > 20 ? 90 : 650;
+  shuf.timer = setInterval(() => {
+    if (shuf.step >= shuf.order.length) { stopShufPlay(); return; }
+    showShufStep(shuf.step + 1);
+    if (shuf.step >= shuf.order.length) stopShufPlay();
+  }, delay);
+}
+
+/* The state a prefix folds to, as a plain {key: value} object — the
+   same shape the replay digests at its end. */
+function plainState(st) {
+  const out = {};
+  Object.keys(st).forEach((k) => { out[k] = st[k].value; });
+  return out;
+}
+
+function dealShuffle() {
+  stopShufPlay();
+  const n = replay.recs.length;
+  if (!replay.g || n === 0) {
+    document.getElementById("s-narration").textContent =
+      "The desk holds no record to shuffle. Rebuild it from the record (the burn, above), then shuffle.";
+    return;
+  }
+  /* A fresh permutation each press (Fisher–Yates); re-deal a few
+     times rather than present the canonical order as a "shuffle". */
+  let order = replay.recs.slice();
+  if (n > 1) {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      order = replay.recs.slice();
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const t = order[i]; order[i] = order[j]; order[j] = t;
+      }
+      if (order.some((r, i) => r !== replay.recs[i])) break;
+    }
+  }
+  shuf.order = order;
+  /* The canonical walk's halfway houses, so each shuffled step can
+     be honestly compared with the canonical step of the same size. */
+  shuf.canonPrefix = [];
+  for (let k = 0; k <= n; k++) {
+    shuf.canonPrefix.push(canon(plainState(stateAt(replay.g, replay.recs.slice(0, k)))));
+  }
+  shuf.diverged = false;
+  shuf.finished = false;
+  document.getElementById("s-digest-canon").textContent = replay.digestAtInit || "—";
+  document.getElementById("s-digest-shuf").textContent = "—";
+  document.getElementById("s-verdict").textContent = "";
+  showShufStep(0);
+}
+
+function showShufStep(i) {
+  const n = shuf.order.length;
+  if (!n) return;
+  shuf.step = Math.max(0, Math.min(i, n));
+  const prevSt = shuf.step > 0 ? stateAt(replay.g, shuf.order.slice(0, shuf.step - 1)) : {};
+  const st = stateAt(replay.g, shuf.order.slice(0, shuf.step));
+  const stateObj = plainState(st);
+  const differsNow = canon(stateObj) !== shuf.canonPrefix[shuf.step];
+  if (shuf.step > 0 && shuf.step < n && differsNow) shuf.diverged = true;
+
+  document.getElementById("s-progress").textContent =
+    "arrival " + shuf.step + " of " + n + " (shuffled)";
+
+  document.getElementById("s-order").innerHTML = shuf.order.map((r, idx) =>
+    '<span class="chip' + (idx < shuf.step ? " done" : "") + (idx === shuf.step - 1 ? " now" : "") + '">' +
+    (idx + 1) + ". " + esc(r.id) + "</span>").join("");
+
+  const grid = document.getElementById("s-state");
+  const keys = Object.keys(st);
+  if (!keys.length) {
+    grid.innerHTML = '<p style="margin:6px 0">No state yet — nothing has arrived.</p>';
+  } else {
+    grid.innerHTML = "<table><tr><th>key</th><th>standing value</th><th>held by</th></tr>" +
+      keys.map((k) => {
+        const res = st[k];
+        const changed = !prevSt[k] || prevSt[k].holder !== res.holder ||
+          canon(prevSt[k].value) !== canon(res.value);
+        return '<tr' + (changed ? ' class="flash"' : "") + '><td>' + esc(k) + "</td><td><b>" +
+          esc(fmtVal(res.value)) + '</b></td><td class="holder">' + esc(res.holder) + "</td></tr>";
+      }).join("") + "</table>";
+  }
+
+  const narr = document.getElementById("s-narration");
+  if (shuf.step === 0) {
+    narr.innerHTML = "A fresh arrival order for the same " + n + " records — the chips above " +
+      "are the sequence this fold will consume. Step through it, or fast-forward: " +
+      "only the end state is allowed to agree with the canonical walk. The steps are not.";
+  } else if (shuf.step < n) {
+    const r = shuf.order[shuf.step - 1];
+    narr.innerHTML = "<b>" + esc(r.id) + "</b> arrives (" + shuf.step + " of " + n + "). " +
+      (differsNow
+        ? "The state so far <b>differs</b> from the canonical walk at this step — a different halfway house, from different arrivals. Keep going: watch whether it matters."
+        : "The state so far happens to match the canonical walk at this step. It is not obliged to.");
+  } else {
+    finishShuffle(stateObj);
+  }
+}
+
+function finishShuffle(stateObj) {
+  shuf.finished = true;
+  const bytes = new TextEncoder().encode(canon(stateObj));
+  crypto.subtle.digest("SHA-256", bytes).then((h) => {
+    const hex = [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    document.getElementById("s-digest-shuf").textContent = hex;
+    const same = replay.digestAtInit && hex === replay.digestAtInit;
+    document.getElementById("s-verdict").innerHTML = same
+      ? '<span class="badge ok">IDENTICAL ✓</span>'
+      : '<span class="badge bad">DIFFERENT ✗</span>';
+    document.getElementById("s-narration").innerHTML =
+      (shuf.diverged
+        ? "The paths differed — step for step, this walk's halfway houses were not the canonical walk's. The destination didn't. "
+        : "This shuffle happened to walk the canonical halfway houses too — deal another; the paths are free to part. Either way, the destination is the point. ") +
+      "The fold doesn't care what order work arrived in — the same completions land on the same state. " +
+      (same
+        ? "Your browser just folded " + shuf.order.length + " records in scrambled arrival order and landed on the desk's digest."
+        : "Your browser folded " + shuf.order.length + " records in scrambled arrival order and did NOT land on the desk's digest — the desk's record moved while you shuffled; restart to fold the current one.");
+  }).catch(() => {});
+}
+
+function resetShuffle() {
+  stopShufPlay();
+  shuf.order = []; shuf.step = 0; shuf.diverged = false; shuf.finished = false;
+  document.getElementById("s-progress").textContent = "press shuffle to scramble the arrival order";
+  document.getElementById("s-order").innerHTML = "";
+  document.getElementById("s-state").innerHTML = '<p style="margin:6px 0">No shuffled fold yet.</p>';
+  document.getElementById("s-narration").textContent =
+    "Every press deals the same records in a new arrival order. Watch the end state: it is not allowed to move.";
+  document.getElementById("s-digest-canon").textContent = "—";
+  document.getElementById("s-digest-shuf").textContent = "—";
+  document.getElementById("s-verdict").textContent = "";
+}
+
+document.getElementById("s-shuffle").onclick = () => dealShuffle();
+document.getElementById("s-prev").onclick = () => { stopShufPlay(); showShufStep(shuf.step - 1); };
+document.getElementById("s-next").onclick = () => { stopShufPlay(); showShufStep(shuf.step + 1); };
+document.getElementById("s-play").onclick = () => { if (shuf.playing) stopShufPlay(); else startShufPlay(); };
+document.getElementById("s-end").onclick = () => { stopShufPlay(); showShufStep(shuf.order.length); };
 
 /* ================================================================== */
 /* Rendering the desk's projection (the depth, below the story)       */
