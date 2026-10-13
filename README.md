@@ -156,7 +156,7 @@ and five seeded permutations (mulberry32, seeds drawn in order) of
 the project's records — folded by a Node port of the same rule —
 must each land on the independent digest from check 1. Re-run live
 against both projects: **all checks pass** on `poc-quilt-1`
-(12 checks; the five shuffles land on `010e942c…95823`) and on
+(10 checks; the five shuffles land on `010e942c…95823`) and on
 `poc-scale-1` (the five 62-record shuffles land on
 `f1e78b16…4380d`). The measured contrast the control exists to
 show: **intermediate states diverged from the canonical walk on
