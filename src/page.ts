@@ -162,12 +162,16 @@ records, in any arrival order, and it leaves the same state behind. Watch it hap
   <h2>🔥 The burn — this desk's memory is a projection. Burn it.</h2>
   <p>Everything the desk holds — the state above, the conflicts, this page's
   picture of the project — is derived from the record and kept only as a cache.
-  Burn the cache and the desk holds <i>nothing</i>. Rebuild, and if the digest
-  comes back identical, the desk never was a second source of truth. It is safe
+  Burn the cache and the desk holds <i>nothing</i>. Rebuild, and if both pins
+  come back identical, the desk never was a second source of truth. It is safe
   to try: the record is untouched, and the desk also heals itself on its
   60-second cadence.</p>
   <p>Digest of the derived state, as the desk now holds it:</p>
   <p class="digest" id="digest-now">—</p>
+  <p>Closure root of the record set it was derived from — a checkpoint-v2
+  digest over every record's whole content, so even a change the fold ignores
+  (a re-worded reason, a swapped loser) moves it:</p>
+  <p class="digest" id="root-now">—</p>
   <div class="bar">
     <button id="burn-btn">🔥 burn the desk</button>
     <button id="rebuild">rebuild from the record alone</button>
@@ -175,6 +179,8 @@ records, in any arrival order, and it leaves the same state behind. Watch it hap
   </div>
   <p>Digest before burn: <span class="digest" id="digest-before">—</span></p>
   <p>Digest after rebuild: <span class="digest" id="digest-after">—</span></p>
+  <p>Root before burn: <span class="digest" id="root-before">—</span></p>
+  <p>Root after rebuild: <span class="digest" id="root-after">—</span></p>
 </section>
 
 <section class="shuffle-frame" id="shuffle">
@@ -257,6 +263,7 @@ let seq = 0;
 const pending = new Map();
 let lastState = null;
 let burnedDigest = null;
+let burnedRoot = null;
 
 function call(method, ...args) {
   return new Promise((resolve, reject) => {
@@ -785,12 +792,13 @@ function render(st) {
   if (!st) return;
   lastState = st;
   document.getElementById("record-link").href =
-    "https://gitpp.casey-digennaro.workers.dev/?project=" + encodeURIComponent(st.project || project);
+    "https://gitpp.superinstance.dev/?project=" + encodeURIComponent(st.project || project);
   document.getElementById("updated").textContent =
     st.updatedAt ? "projection as of " + st.updatedAt : "";
   document.getElementById("lines").innerHTML =
     (st.lines && st.lines.length ? st.lines : ["—"]).map((l) => "<li>" + esc(l) + "</li>").join("");
   document.getElementById("digest-now").textContent = st.digest || "— (desk is empty)";
+  document.getElementById("root-now").textContent = st.root || "— (desk is empty)";
 
   const conf = document.getElementById("conflicts");
   if (!st.conflicts || !st.conflicts.length) {
@@ -875,16 +883,20 @@ document.getElementById("burn-btn").onclick = async () => {
   stopPlay();
   const res = await call("burn");
   burnedDigest = res.burnedDigest;
+  burnedRoot = res.burnedRoot;
   document.getElementById("digest-before").textContent = burnedDigest || "—";
   document.getElementById("digest-after").textContent = "—";
+  document.getElementById("root-before").textContent = burnedRoot || "—";
+  document.getElementById("root-after").textContent = "—";
   document.getElementById("burn-verdict").textContent = "desk burned — it now holds nothing.";
 };
 document.getElementById("rebuild").onclick = async () => {
   const res = await call("rebuild");
   document.getElementById("digest-after").textContent = res.digest || "—";
+  document.getElementById("root-after").textContent = res.root || "—";
   const v = document.getElementById("burn-verdict");
-  if (burnedDigest && res.digest === burnedDigest) {
-    v.innerHTML = '<span class="badge ok">IDENTICAL ✓</span> the desk is a projection.';
+  if (burnedDigest && burnedRoot && res.digest === burnedDigest && res.root === burnedRoot) {
+    v.innerHTML = '<span class="badge ok">IDENTICAL ✓</span> state and closure root — the desk is a projection.';
   } else if (burnedDigest) {
     v.innerHTML = '<span class="badge bad">DIFFERENT ✗</span> the record changed, or the desk lied.';
   } else {

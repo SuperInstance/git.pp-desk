@@ -1,7 +1,7 @@
 # git.pp-desk — the captain's desk, as a projection
 
-**Live:** https://gitpp-desk.casey-digennaro.workers.dev
-**The record it watches:** https://gitpp.casey-digennaro.workers.dev (`poc-quilt-1` by default)
+**Live:** https://gitpp-desk.superinstance.dev
+**The record it watches:** https://gitpp.superinstance.dev (`poc-quilt-1` by default)
 
 A spike, built 2026-10-13 to play-test one verdict from the git.pp
 R&D programme: **adopt Cloudflare Agents as projection**
@@ -16,13 +16,29 @@ URL on it.
 One Agent class, `Desk` (Cloudflare Agents SDK, a Durable Object),
 one instance per git.pp project. The Desk:
 
-- **`refresh()`** — fetches `/api/state` + `/api/records` for its
+- **`refresh()`** — manifest-gated (v2, see below): first reads
+  `/api/repos`, the namespace's per-repo `updatedAt` etag sheet, and
+  compares it with the manifest from the last full read. If none of
+  the project's repos moved, the tick ends there — one call, no
+  re-read. Otherwise it fetches `/api/state` + `/api/records` for its
   project from the live git.pp Worker (both public, credential-free)
   and stores *only a projection*: the derived state, the conflicts,
   per-witness `recordsBehind`, the record set it was derived from, a
-  sha256 digest over the canonical state JSON (spike-grade pin), and
-  the captain's five digest lines (the Middleman Kit's `digest.py`,
-  ported). Every `setState` broadcasts to connected WebSockets.
+  sha256 digest over the canonical state JSON, the checkpoint-v2
+  closure root over the record set (next bullet), and the captain's
+  five digest lines (the Middleman Kit's `digest.py`, ported). Every
+  `setState` broadcasts to connected WebSockets.
+- **The closure root** — the state digest pins *what was derived*;
+  the root pins *what it was derived from*. It is checkpoint v2's
+  construction (the submission repo's `docs/CHECKPOINT-V2.md`)
+  ported into `src/digest.ts`: a whole-record leaf per record
+  (id, parents-as-set, kind, effects in the float64 domain, reason),
+  hashed over the frontier records' ancestor-closure union — the
+  held set. Any held record added, removed, or re-versioned moves
+  it, including changes the fold ignores. For `poc-quilt-1` the set
+  root is `2b79c3d2…f038048`, and the same port reproduces the
+  conformance-pinned closure root at `task-c`,
+  `60effe23970d…fc91d`, from the live record set.
 - **A 60-second schedule** re-derives the projection. The cadence is
   declared in [`desk.json`](desk.json), committed in this repo and
   registered by `onStart` on every wake. *Spike simplification, stated
@@ -45,7 +61,14 @@ one instance per git.pp project. The Desk:
 - **`burn()` / `rebuild()`** — the deciding test from the fit note,
   as a push-button drill: burn wipes the stored projection entirely;
   rebuild re-derives it from the record alone. The desk is a
-  projection iff the digest comes back identical.
+  projection iff the digest *and the closure root* come back
+  identical.
+- **`destroyInstance()`** — the same test in nuclear form: the whole
+  Durable Object is destroyed (`this.destroy()` — every table, the
+  alarm, all storage), deferred one second so the reply lands first.
+  A fresh instance answers under the same name, empty; its `onStart`
+  re-registers the cadence; the cadence rebuilds the projection.
+  Playtested live (below): nothing strands.
 
 The page at `/` is the chair, arranged as a story first and depth
 below — a stranger should meet the claim, the mechanism, and the
@@ -188,3 +211,73 @@ the desk reads only its two public endpoints.
 ## License
 
 MIT © 2026 SuperInstance.
+
+## Desk v2 (2026-10-14)
+
+The substrate moved after the desk was built — checkpoint v2
+graduated and is wired into the git.pp Worker, the fold went to
+bitsets, and `/api/repos` publishes per-repo `updatedAt`. Three
+upgrades bring the desk up to it:
+
+**1. Closure-root pinning.** The digest pinned derived state only;
+the desk now also computes the checkpoint-v2 set root over the
+records it holds (`src/digest.ts`: faithful port of the fold's leaf
+machinery — Python-canonical leaf form, float64 leaf numbers,
+parents as a set, `id:leaf` lines over the frontier closure union).
+What it pins, exactly: every held record's id and whole content.
+What it does not: which repo holds a record, arrival order, or
+records not held. Equality is proven three ways: the port
+reproduces the conformance-pinned root at `poc-quilt-1@task-c`
+(`60effe23970d…`, 5-record closure) from the live record set; the
+Python referee computes the same set root
+(`2b79c3d2ea178105859c00a06f441a26bc2c26e6d321e9749410fba7ef038048`);
+and the playtest carries its own from-the-doc implementation that
+must agree with the desk before anything else is believed. The
+page's burn centrepiece now shows state digest **and** closure
+root, both required IDENTICAL after a rebuild.
+
+**2. Cheaper refresh.** The per-minute tick no longer re-reads the
+record set unconditionally. It reads the `/api/repos` manifest
+first (the same etag discipline as the Worker's delta reads) and
+skips the re-read when the project's repos haven't moved.
+Measured on `poc-scale-1` against the live pair (method: the
+desk's own `apiCalls` instrumentation for desk→Worker HTTP calls;
+Worker-side binding counts from the delta-reads accounting):
+
+| tick | before (v1) | after (v2) |
+|---|---|---|
+| quiet tick | 2 calls (`/api/state` + `/api/records`), two server derivations, every minute | **1 call** (`/api/repos`, a namespace list — ~2 binding calls), 0 derivations |
+| changed tick | 2 calls | 3 calls (manifest + the same two reads) |
+
+Live run on the deployed desk: forced rebuild = 3 calls (~3.8 s,
+dominated by the two source derivations at ~2.7 s / ~3.2 s); three
+consecutive quiet ticks = 1 call each (~0.3 s), digest and root
+unchanged; playtest check 6 proves a skipped tick's digest+root
+equal a forced full re-read's.
+
+**3. The real `destroy()` test.** The fit note's deciding test was
+argued with `setState` burns; v2 runs it with the Durable Object
+itself destroyed, on a disposable project (`demo-race-1`, never
+`poc-quilt-1`). Live verdict, 2026-10-14: **the desk survives
+total destruction and the platform strands nothing.** After
+`destroy()`, a fresh empty instance answered under the same name;
+with no further writes — only status polls — the cadence the fresh
+instance's `onStart` re-registered rebuilt the projection from the
+record alone, landing on the pre-destroy digest
+(`eaf5bce8…874777`) and root (`0be8be5a…46afe72`), IDENTICAL. The
+one dependency the heal leans on is now explicit: `onStart` must
+re-register the interval, because `destroy()` takes the schedules
+with everything else — and the drill (playtest §7, `DESTROY_DRILL=1`)
+is how that stays proven rather than assumed.
+
+**One honest wart, found by the first v2 deploy:** Durable Object
+code deploys do not migrate stored state. An instance warmed under
+v1 holds a state with the v2 fields *absent*, and the first v2
+`refresh()` read them unguarded and threw until a burn reset the
+shape. All v2 state fields are now read through defaults
+(`refresh()` carries the note); the playtest's first post-deploy
+run caught it, which is what playtests are for.
+
+Playtests (all live, against the deployed desk, both projects plus
+the drill): 16/16 on `poc-quilt-1`, 16/16 on `poc-scale-1`, 19/19
+on `demo-race-1` with `DESTROY_DRILL=1`.
