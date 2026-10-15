@@ -388,3 +388,278 @@ export function digestLines(
 
   return [l1, l2, l3, l4, l5].map(fit);
 }
+
+/* ------------------------------------------------------------------ */
+/* Checkpoint v2 — closure-root pinning (Desk v2)                      */
+/* ------------------------------------------------------------------ */
+/*
+ * The state digest above pins WHAT the fold derived. It does not pin
+ * what the derivation was derived FROM: two different record sets can
+ * leave the same state behind (a reason re-versioned, a loser swapped),
+ * and the state digest cannot tell them apart. Checkpoint v2 (the
+ * submission repo's docs/CHECKPOINT-V2.md, DESIGN §6) closes that with
+ * a closure root over the records themselves. This section ports that
+ * construction faithfully from the submission repo's src/fold.ts —
+ * same canonical JSON (Python json.dumps byte form), same leaf-number
+ * encoding in the float64 domain, same synchronous SHA-256 — so the
+ * desk's roots are the referee's roots, reproducible by any port.
+ *
+ *   leaf(rec)  = SHA-256 of the canonical form of the record's WHOLE
+ *                content {id, parents-as-set, kind, effects, reason}
+ *   root       = SHA-256 of "\n".join(id + ":" + leaf) over a set of
+ *                ids sorted by Unicode code point.
+ *
+ * closureRoot(records, at) is the v2 primitive itself (at's ancestor
+ * closure; null if any ancestor is absent). setRoot(records) is the
+ * desk's whole-set form: the closure taken at the FRONTIER — the union
+ * of the ancestor closures of every frontier record (a record no held
+ * record descends from) is the held set itself, so the set root pins
+ * exactly what the desk holds: every held record's id and whole
+ * content. Adding, removing, or re-versioning any held record — even
+ * in a way the fold ignores, like a reason edit — moves the root.
+ * What it does NOT pin: repo origins and arrival order (the leaf reads
+ * neither), and records the desk does not hold.
+ */
+
+/** Compare two strings by Unicode code point (Python's ordering). */
+export function cmpCodePoints(a: string, b: string): number {
+  const ai = Array.from(a);
+  const bi = Array.from(b);
+  const n = Math.min(ai.length, bi.length);
+  for (let i = 0; i < n; i++) {
+    const ca = ai[i].codePointAt(0) as number;
+    const cb = bi[i].codePointAt(0) as number;
+    if (ca !== cb) return ca < cb ? -1 : 1;
+  }
+  return ai.length - bi.length;
+}
+
+function pyEscapeString(s: string): string {
+  let out = '"';
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    const ch = s[i];
+    if (ch === '"') out += '\\"';
+    else if (ch === "\\") out += "\\\\";
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else if (ch === "\b") out += "\\b";
+    else if (ch === "\f") out += "\\f";
+    else if (code < 0x20 || code >= 0x7f) {
+      out += "\\u" + code.toString(16).padStart(4, "0");
+    } else out += ch;
+  }
+  return out + '"';
+}
+
+/** Python's float repr for the leaf-number domain (see fold.ts). */
+function pyFloatRepr(n: number): string {
+  const neg = n < 0;
+  const abs = Math.abs(n);
+  const exp = abs.toExponential();
+  const eIdx = exp.indexOf("e");
+  const mant = exp.slice(0, eIdx);
+  const E = parseInt(exp.slice(eIdx + 1), 10);
+  const decpt = E + 1;
+  let s: string;
+  if (decpt <= -4 || decpt > 16) {
+    const eSign = E < 0 ? "-" : "+";
+    s = mant + "e" + eSign + String(Math.abs(E)).padStart(2, "0");
+  } else {
+    s = String(abs);
+  }
+  return neg ? "-" + s : s;
+}
+
+function pyNumber(n: number): string {
+  if (Number.isNaN(n)) return "NaN";
+  if (!Number.isFinite(n)) return n > 0 ? "Infinity" : "-Infinity";
+  if (n === 0) return "0";
+  if (Number.isInteger(n) && Math.abs(n) < 1e21) return BigInt(n).toString();
+  return pyFloatRepr(n);
+}
+
+/** Python-compatible canonical JSON (json.dumps, sort_keys, ", "/": "). */
+export function pyCanonical(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return pyNumber(value);
+  if (typeof value === "string") return pyEscapeString(value);
+  if (Array.isArray(value)) {
+    return "[" + value.map(pyCanonical).join(", ") + "]";
+  }
+  if (typeof value === "object") {
+    const obj = value as { [key: string]: unknown };
+    const keys = Object.keys(obj).sort(cmpCodePoints);
+    return (
+      "{" +
+      keys.map((k) => pyEscapeString(k) + ": " + pyCanonical(obj[k])).join(", ") +
+      "}"
+    );
+  }
+  return pyEscapeString(String(value));
+}
+
+/* Synchronous SHA-256 (the fold's, verbatim in behaviour): the digest
+ * is a pure function of the string, reproducible by the Python referee
+ * (hashlib) and any third implementation. Validated against the same
+ * standard vectors as src/fold.ts's copy. */
+const _SHA_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
+  0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+  0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+  0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+  0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+  0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+  0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+  0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+export function sha256Hex(input: string): string {
+  const H = new Uint32Array([
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
+    0x1f83d9ab, 0x5be0cd19,
+  ]);
+  const bytes = new TextEncoder().encode(input);
+  const bitLen = bytes.length * 8;
+  const padded = new Uint8Array(Math.ceil((bytes.length + 1 + 8) / 64) * 64);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const dv = new DataView(padded.buffer);
+  dv.setUint32(padded.length - 4, bitLen >>> 0, false);
+  dv.setUint32(padded.length - 8, Math.floor(bitLen / 0x100000000), false);
+  const w = new Uint32Array(64);
+  const rotr = (x: number, n: number): number => (x >>> n) | (x << (32 - n));
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let a = H[0], b = H[1], c = H[2], d = H[3];
+    let e = H[4], f = H[5], g = H[6], h = H[7];
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + _SHA_K[i] + w[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0;
+      d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0;
+    H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+    H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0;
+    H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+  }
+  let hex = "";
+  for (let i = 0; i < 8; i++) hex += H[i].toString(16).padStart(8, "0");
+  return hex;
+}
+
+function leafParentsOf(rec: Rec): string[] {
+  const ps = (rec as { parents?: unknown }).parents;
+  if (!Array.isArray(ps)) return [];
+  return ps.map((p) => String(p));
+}
+
+function leafEffectsOf(rec: Rec): { [key: string]: unknown } {
+  const eff = (rec as { effects?: unknown }).effects;
+  const out: { [key: string]: unknown } = {};
+  if (eff && typeof eff === "object" && !Array.isArray(eff)) {
+    for (const [k, v] of Object.entries(eff as { [key: string]: unknown })) {
+      out[String(k)] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * SHA-256 of a record's WHOLE canonical content: id, parents (as a
+ * set, sorted by code point), kind (raw), effects (float64 domain),
+ * reason (raw, null if absent). Mirrors the referee's _record_leaf.
+ */
+export function recordLeaf(rec: Rec): string {
+  const r = rec as { id?: unknown; kind?: unknown; reason?: unknown };
+  const normalized = {
+    id: String(r.id ?? ""),
+    parents: leafParentsOf(rec).slice().sort(cmpCodePoints),
+    kind: r.kind ?? null,
+    effects: leafEffectsOf(rec),
+    reason: r.reason ?? null,
+  };
+  return sha256Hex(pyCanonical(normalized));
+}
+
+function indexById(records: Rec[]): Map<string, Rec> {
+  const byId = new Map<string, Rec>();
+  for (const r of records) if (!byId.has(r.id)) byId.set(r.id, r);
+  return byId;
+}
+
+/**
+ * The checkpoint-v2 closure root at `at` over the records given:
+ * SHA-256 over the "id:leaf" lines of `at`'s full ancestor closure,
+ * ids sorted by code point. Null if `at` is absent or any ancestor is
+ * missing (an incomplete closure has no root — the referee's rule).
+ */
+export function closureRoot(records: Rec[], at: string): string | null {
+  const byId = indexById(records);
+  if (!byId.has(at)) return null;
+  const closure = new Set<string>();
+  const stack = [at];
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (closure.has(n)) continue;
+    closure.add(n);
+    for (const p of leafParentsOf(byId.get(n)!)) {
+      if (!byId.has(p)) return null;
+      stack.push(p);
+    }
+  }
+  const lines = [...closure]
+    .sort(cmpCodePoints)
+    .map((id) => `${id}:${recordLeaf(byId.get(id)!)}`);
+  return sha256Hex(lines.join("\n"));
+}
+
+/**
+ * The desk's set root: the v2 construction taken at the frontier.
+ * The union of the frontier records' ancestor closures is the held
+ * set, so this pins every record the desk holds — its id set and each
+ * record's whole content — in one digest. (Closures here are taken
+ * WITHIN the held set: a parent the desk does not hold is not the
+ * desk's to pin. Records unreachable from any frontier — a parent
+ * cycle, which the fold excludes from derivation — are still held, so
+ * they are pinned too.) Null when the desk holds nothing.
+ */
+export function setRoot(records: Rec[]): string | null {
+  if (!records.length) return null;
+  const byId = indexById(records);
+  const namedAsParent = new Set<string>();
+  for (const r of byId.values()) for (const p of leafParentsOf(r)) namedAsParent.add(p);
+
+  const covered = new Set<string>();
+  const walk = (start: string) => {
+    const stack = [start];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (covered.has(n) || !byId.has(n)) continue;
+      covered.add(n);
+      for (const p of leafParentsOf(byId.get(n)!)) if (byId.has(p)) stack.push(p);
+    }
+  };
+  for (const id of byId.keys()) if (!namedAsParent.has(id)) walk(id);
+  for (const id of byId.keys()) if (!covered.has(id)) covered.add(id);
+
+  const lines = [...covered]
+    .sort(cmpCodePoints)
+    .map((id) => `${id}:${recordLeaf(byId.get(id)!)}`);
+  return sha256Hex(lines.join("\n"));
+}

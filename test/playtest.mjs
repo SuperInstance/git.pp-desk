@@ -2,18 +2,26 @@
  * playtest.mjs — the Desk, played with honestly.
  *
  * Run: node test/playtest.mjs [project]
+ *      DESTROY_DRILL=1 node test/playtest.mjs <scratch-project>
+ *      (section 7: the real destroy() drill — never run it against
+ *      poc-quilt-1; it destroys the project's Desk instance and then
+ *      waits for the cadence to rebuild it, ~2 minutes)
  *
  * Independence note: the digest compared in check (1) is computed
  * HERE, by a second implementation of the canonical form, over bytes
  * fetched directly from the git.pp record — never through the Desk.
  * If the desk's digest and this one agree, two implementations over
  * the record agree; that is the only kind of agreement this system
- * has ever trusted.
+ * has ever trusted. The closure root in check (1b) is held to the
+ * same discipline: a from-the-doc port of checkpoint v2
+ * (docs/CHECKPOINT-V2.md in the submission repo) lives below, and it
+ * is itself anchored to the conformance-pinned literal root for
+ * poc-quilt-1@task-c before the desk's root is believed.
  */
 import { createHash } from "node:crypto";
 
-const DESK = process.env.DESK_URL ?? "https://gitpp-desk.casey-digennaro.workers.dev";
-const SOURCE = "https://gitpp.casey-digennaro.workers.dev";
+const DESK = process.env.DESK_URL ?? "https://gitpp-desk.superinstance.dev";
+const SOURCE = process.env.SOURCE_URL ?? "https://gitpp.superinstance.dev";
 const PROJECT = process.argv[2] ?? "poc-quilt-1";
 
 const canonical = (v) =>
@@ -29,6 +37,105 @@ const canonical = (v) =>
         "}";
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
+/* --- checkpoint v2, ported from docs/CHECKPOINT-V2.md ---------------
+ * leaf(rec) = sha256 of the Python-canonical form of the record's
+ * whole content {id, parents-as-set, kind, effects, reason}; numbers
+ * in the float64 leaf encoding (integral |v|<1e21 → exact integer
+ * digits; -0 → 0; else Python float repr). Root = sha256 of the
+ * "id:leaf" lines, ids sorted by code point. */
+const cmpCP = (a, b) => {
+  const ai = Array.from(a), bi = Array.from(b);
+  const n = Math.min(ai.length, bi.length);
+  for (let i = 0; i < n; i++) {
+    const ca = ai[i].codePointAt(0), cb = bi[i].codePointAt(0);
+    if (ca !== cb) return ca < cb ? -1 : 1;
+  }
+  return ai.length - bi.length;
+};
+const pyEsc = (s) => {
+  let out = '"';
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i), ch = s[i];
+    if (ch === '"') out += '\\"';
+    else if (ch === "\\") out += "\\\\";
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else if (ch === "\b") out += "\\b";
+    else if (ch === "\f") out += "\\f";
+    else if (code < 0x20 || code >= 0x7f) out += "\\u" + code.toString(16).padStart(4, "0");
+    else out += ch;
+  }
+  return out + '"';
+};
+const pyNum = (n) => {
+  if (Number.isNaN(n)) return "NaN";
+  if (!Number.isFinite(n)) return n > 0 ? "Infinity" : "-Infinity";
+  if (n === 0) return "0";
+  if (Number.isInteger(n) && Math.abs(n) < 1e21) return BigInt(n).toString();
+  const neg = n < 0, abs = Math.abs(n), exp = abs.toExponential();
+  const eIdx = exp.indexOf("e"), mant = exp.slice(0, eIdx), E = parseInt(exp.slice(eIdx + 1), 10);
+  const decpt = E + 1;
+  const s = decpt <= -4 || decpt > 16
+    ? mant + "e" + (E < 0 ? "-" : "+") + String(Math.abs(E)).padStart(2, "0")
+    : String(abs);
+  return neg ? "-" + s : s;
+};
+const pyCanonical = (v) => {
+  if (v === null || v === undefined) return "null";
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return pyNum(v);
+  if (typeof v === "string") return pyEsc(v);
+  if (Array.isArray(v)) return "[" + v.map(pyCanonical).join(", ") + "]";
+  const keys = Object.keys(v).sort(cmpCP);
+  return "{" + keys.map((k) => pyEsc(k) + ": " + pyCanonical(v[k])).join(", ") + "}";
+};
+const recordLeaf = (rec) =>
+  sha256(pyCanonical({
+    id: String(rec.id ?? ""),
+    parents: [...(rec.parents ?? [])].map(String).sort(cmpCP),
+    kind: rec.kind ?? null,
+    effects: rec.effects ?? {},
+    reason: rec.reason ?? null,
+  }));
+const closureRootAt = (records, at) => {
+  const byId = {};
+  records.forEach((r) => { if (!(r.id in byId)) byId[r.id] = r; });
+  if (!(at in byId)) return null;
+  const closure = new Set(), stack = [at];
+  while (stack.length) {
+    const n = stack.pop();
+    if (closure.has(n)) continue;
+    closure.add(n);
+    for (const p of byId[n].parents ?? []) {
+      if (!(p in byId)) return null;
+      stack.push(p);
+    }
+  }
+  return sha256([...closure].sort(cmpCP).map((id) => `${id}:${recordLeaf(byId[id])}`).join("\n"));
+};
+/** The desk's set root: the v2 lines over the frontier records'
+ * ancestor-closure union (== the held set), from the same doc. */
+const setRootOf = (records) => {
+  if (!records.length) return null;
+  const byId = {};
+  records.forEach((r) => { if (!(r.id in byId)) byId[r.id] = r; });
+  const named = new Set(records.flatMap((r) => (r.parents ?? []).map(String)));
+  const covered = new Set();
+  const walk = (start) => {
+    const stack = [start];
+    while (stack.length) {
+      const n = stack.pop();
+      if (covered.has(n) || !(n in byId)) continue;
+      covered.add(n);
+      (byId[n].parents ?? []).forEach((p) => { if (p in byId) stack.push(p); });
+    }
+  };
+  Object.keys(byId).forEach((id) => { if (!named.has(id)) walk(id); });
+  Object.keys(byId).forEach((id) => { if (!covered.has(id)) covered.add(id); });
+  return sha256([...covered].sort(cmpCP).map((id) => `${id}:${recordLeaf(byId[id])}`).join("\n"));
+};
+
 const desk = async (action, extra = {}) => {
   const q = new URLSearchParams({ project: PROJECT, action, ...extra });
   const res = await fetch(`${DESK}/api/desk?${q}`);
@@ -43,11 +150,32 @@ const check = (name, ok, detail) => {
 
 /* (1) Projection loads and matches the live record. */
 const live = await (await fetch(`${SOURCE}/api/state?project=${PROJECT}`)).json();
+const recordsDoc = await (await fetch(`${SOURCE}/api/records?project=${PROJECT}`)).json();
 const independentDigest = sha256(canonical(live.state));
 const refreshed = await desk("refresh");
 console.log(`independent digest (from the record, computed here): ${independentDigest}`);
 console.log(`desk digest        (from the Desk's projection):     ${refreshed.digest}`);
 check("1. desk digest == independent digest", refreshed.digest === independentDigest);
+
+/* (1b) The closure root: the desk now pins the record SET, not only
+   the state. This test's own v2 port must first reproduce the
+   conformance-pinned literal (poc-quilt-1@task-c, over its 5-record
+   closure) from the live record — that anchors the port to the
+   referee, not to the desk. Then the desk's set root (frontier
+   union == the whole held set) must equal the same port's set root
+   over the same bytes. */
+const independentRoot = setRootOf(recordsDoc.records);
+console.log(`independent set root (frontier union, computed here): ${independentRoot}`);
+console.log(`desk set root        (from the Desk's projection):     ${refreshed.root}`);
+if (PROJECT === "poc-quilt-1") {
+  const atTaskC = closureRootAt(recordsDoc.records, "task-c");
+  check(
+    "1b-i. this port reproduces the pinned root at task-c",
+    atTaskC === "60effe23970d8a5cc837636c44685502361288c1f00577e9addfa10cbd4fc91d",
+    `task-c closure root=${atTaskC}`,
+  );
+}
+check("1b. desk set root == independent set root", refreshed.root === independentRoot);
 
 const status = await desk("status");
 console.log("\nThe five lines, as the desk serves them:");
@@ -67,7 +195,6 @@ check(
 );
 
 /* (4) draftOverride() names the true frontier as parents. */
-const recordsDoc = await (await fetch(`${SOURCE}/api/records?project=${PROJECT}`)).json();
 const isParent = new Set(recordsDoc.records.flatMap((r) => r.parents ?? []));
 const trueFrontier = live.order.filter((id) => !isParent.has(id));
 const draft = await desk("draft", {
@@ -82,22 +209,56 @@ check(
   `frontier=${JSON.stringify(trueFrontier)}`,
 );
 
-/* (2) THE BEAUTY TEST: burn → empty → rebuild → identical digest. */
+/* (2) THE BEAUTY TEST: burn → empty → rebuild → identical digest
+   AND identical closure root. The root is the stronger half: the
+   state could in principle be re-derived from a different record
+   set and still match; the root cannot. */
 const burned = await desk("burn");
 const emptyStatus = await desk("status");
 console.log(
-  `\nburn: burnedDigest=${burned.burnedDigest}; desk now holds digest=${emptyStatus.digest}, records=${emptyStatus.records.length}, ready=${emptyStatus.ready}`,
+  `\nburn: burnedDigest=${burned.burnedDigest}, burnedRoot=${burned.burnedRoot}; desk now holds digest=${emptyStatus.digest}, root=${emptyStatus.root}, records=${emptyStatus.records.length}, ready=${emptyStatus.ready}`,
 );
 check(
   "2a. burn leaves the desk empty",
-  emptyStatus.digest === null && emptyStatus.records.length === 0 && emptyStatus.ready === false,
+  emptyStatus.digest === null &&
+    emptyStatus.root === null &&
+    emptyStatus.records.length === 0 &&
+    emptyStatus.ready === false,
 );
 const rebuilt = await desk("rebuild");
 console.log(`rebuild digest: ${rebuilt.digest}`);
+console.log(`rebuild root:   ${rebuilt.root}`);
 check(
   "2b. rebuild digest == pre-burn digest",
   rebuilt.digest === burned.burnedDigest && rebuilt.digest === independentDigest,
   rebuilt.digest === burned.burnedDigest ? "IDENTICAL" : "DIFFERENT",
+);
+check(
+  "2c. rebuild root == pre-burn root",
+  rebuilt.root === burned.burnedRoot && rebuilt.root === independentRoot,
+  rebuilt.root === burned.burnedRoot ? "IDENTICAL" : "DIFFERENT",
+);
+
+/* (6) THE CHEAP TICK: with the record unmoved, a refresh must prove
+   it from the manifest alone — one API call, no re-read — and the
+   digest+root it stands on must equal a forced full re-read's. */
+const skip = await desk("refresh");
+console.log(
+  `\nmanifest tick: skipped=${skip.skipped}, apiCalls=${skip.apiCalls}, changedRepos=${JSON.stringify(skip.changedRepos)}`,
+);
+check(
+  "6a. unchanged manifest → tick skipped on the manifest alone",
+  skip.skipped === true && skip.apiCalls === 1,
+  `apiCalls=${skip.apiCalls}`,
+);
+const forced = await desk("rebuild");
+check(
+  "6b. digest+root after a skipped tick == after a forced full re-read",
+  skip.digest === forced.digest &&
+    skip.root === forced.root &&
+    forced.skipped === false &&
+    forced.apiCalls === 3,
+  `skip(${skip.digest}, ${skip.root}) vs forced(${forced.digest}, ${forced.root})`,
 );
 
 /* (5) The page answers, and the socket speaks. */
@@ -120,6 +281,16 @@ check("5a. page serves", page.status === 200 && pageHtml.includes("Captain's Des
     `claim@${claimAt} fold@${foldAt} burn@${burnAt} depth@${depthAt}`,
   );
 }
+
+/* (5e) The burn centrepiece carries BOTH pins: the state digest and
+   the closure root displays the page's burn flow drives. */
+check(
+  "5e. burn frame shows state digest + closure root, before/after",
+  pageHtml.includes('id="root-now"') &&
+    pageHtml.includes('id="root-before"') &&
+    pageHtml.includes('id="root-after"') &&
+    pageHtml.includes("Closure root of the record set"),
+);
 
 /* (5d) Shuffle & re-fold: the served page carries the control, and the
    fold itself is arrival-order invariant. The fold port below mirrors
@@ -249,6 +420,52 @@ try {
   check("5b. websocket broadcasts the projection", wsState.digest === independentDigest);
 } catch (err) {
   check("5b. websocket broadcasts the projection", false, err.message);
+}
+
+/* (7) THE DESTROY DRILL — opt-in (DESTROY_DRILL=1), scratch projects
+   only. The fit note's deciding test with the real this.destroy():
+   the whole Durable Object drops — projection, manifest, schedules.
+   What must happen next, unprompted: a fresh instance answers under
+   the same name, empty; onStart re-registers the cadence; the
+   cadence rebuilds the projection from the record alone, landing on
+   the pre-destroy digest AND root. If any of that strands, the
+   failure is the finding — this section reports, it does not fix. */
+if (process.env.DESTROY_DRILL === "1") {
+  console.log("\n--- destroy drill (DESTROY_DRILL=1) ---");
+  if (PROJECT === "poc-quilt-1") {
+    check("7. destroy drill refuses poc-quilt-1", false, "pass a scratch project instead");
+  } else {
+    const beforeDestroy = await desk("rebuild");
+    console.log(
+      `pre-destroy: digest=${beforeDestroy.digest}, root=${beforeDestroy.root}`,
+    );
+    const dres = await desk("destroy");
+    check(
+      "7a. destroy accepted (deferred to the alarm)",
+      dres.destroying === PROJECT,
+      JSON.stringify(dres),
+    );
+    let fresh = null;
+    for (let i = 0; i < 40 && !fresh; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const s = await desk("status").catch(() => null);
+      if (s && s.ready === false && s.digest === null && s.root === null && (s.records?.length ?? 0) === 0)
+        fresh = s;
+    }
+    check("7b. after destroy, a fresh empty instance answers", !!fresh);
+    let healed = null;
+    for (let i = 0; i < 40 && !healed; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const s = await desk("status").catch(() => null);
+      if (s && s.ready && s.digest === beforeDestroy.digest && s.root === beforeDestroy.root)
+        healed = s;
+    }
+    check(
+      "7c. the cadence rebuilds the destroyed desk — digest+root identical",
+      !!healed,
+      healed ? "IDENTICAL" : "not healed within ~200 s of polling",
+    );
+  }
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nAll checks passed.");
